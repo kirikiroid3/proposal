@@ -65,7 +65,7 @@
   #v(1mm)
   #text(12pt, fill: luma(70))[Realtime preview, arbitrary jump and robust saves \ from a pushdown narrative core]
   #v(2mm)
-  #text(9.5pt, fill: luma(100))[Design proposal · draft for team discussion · 16 October 2026]
+  #text(9.5pt, fill: luma(100))[Design proposal · draft for team discussion · 16 October 2026, revised 19 October 2026]
 ]
 #v(3mm)
 
@@ -206,7 +206,9 @@ boolean variables, which is why we need symbolic representations (Section 5).
 What we actually require is weaker than "the game halts", and both properties hold under these
 rules:
 
-+ *Each step terminates.* Code between two input points is total.
++ *Each step terminates.* Code between two input points is total. This needs every loop _and_
+  every cycle of calls to pass through an input point: a scene that calls itself before any input
+  grows the stack forever inside one step.
 + *Reachability queries are decidable*, e.g. "can line 412 be reached with `met_B` unset?"
 
 == What a pushdown language looks like
@@ -226,7 +228,7 @@ project @ball2000boolean @ball2000bebop); its graphical twin is a *recursive sta
   [Computed call over a _finite enum_ of scenes (a case split)],
   [Jumping into the middle of another scene: breaks well-nested call/return],
   [`jump` within the current scene; loops that pass through a `choice` or have a fixed bound],
-  [Loops with no input and no bound: a single step might not terminate],
+  [Loops, or cycles of calls, with no input and no bound: a single step might not terminate],
   [`choice` (input), `say` / `show` (output via the presentation layer)],
   [Reading wall-clock time or OS state inside the narrative core (see the meta layer, Section 8.3)],
 ))
@@ -304,37 +306,51 @@ different places:
   it gains genuine context-free power at no cost to decidability.
 ]
 
-```
-scene day1:
+```xml
+<scene name="day1">
   ...
-  call festival_hub
-  jump dorm_night
+  <call scene="festival_hub" />
+  <call scene="dorm_night" />
+</scene>
 
-scene festival_hub:
-  label map:
-    choice:
-      "Go to A" -> call stall_A ; jump map
-      "Go to B" -> call stall_B ; jump map
-      "Go to C" -> call stall_C ; jump map
-      "Leave"   when visited_A and visited_B and visited_C -> return
+<scene name="festival_hub">
+  <label id="map" />
+  <choice id="map">
+    <choice-arm id="a" text="Go to A"><call scene="stall_a" /><goto label="map" /></choice-arm>
+    <choice-arm id="b" text="Go to B"><call scene="stall_b" /><goto label="map" /></choice-arm>
+    <choice-arm id="c" text="Go to C"><call scene="stall_c" /><goto label="map" /></choice-arm>
+    <match vars="visited_a visited_b visited_c">
+      <cases><case val="true true true" /><do><choice-arm id="leave" text="Leave" /></do></cases>
+      <cases><case val="_ _ _" /><do /></cases>
+    </match>
+  </choice>
+</scene>
 
-scene stall_A:
-  if visited_A:
-    say "The stall is already packing up."
-    return
-  visited_A = true
+<scene name="stall_a">
+  <match var="visited_a">
+    <cases><case val="true" /><do><s>The stall is already packing up.</s><return /></do></cases>
+    <cases><case val="false" /><do /></cases>
+  </match>
+  <set var="visited_a" val="true" />
   ...
-  return
+</scene>
 ```
 
-== Node editor as the language
+== XML script, node editor as a view
 
 An RSM is literally a node graph: each *component* is a graph with entry and exit nodes, and a
-*box* stands for a call whose exits are wired to the caller @alur2005. A component may have
-several exits; a confession scene can exit through `accepted` or `rejected`, and the caller wires
-each one differently. The visual editor's graph format _is_ the language, and the analyzer
-works on it directly. A textual form like the one above is a serialization for version control,
-not a separate language.
+*box* stands for a call whose exits are wired to the caller @alur2005. The script is written as
+XML (`.kis`, specified in the Kagari syntax book), as in the example above: `<scene>` is a
+component, `<call>` a box, `<goto>` and `<label>` are edges inside a component, and `<s>` and
+`<choice>` are input nodes. Exits are not wired separately: a scene that can end in several ways
+(a confession that is `accepted` or `rejected`) sets an enum before it returns, and the caller
+branches on it.
+
+#decision[
+  The XML text is canonical in version control: it diffs and merges as text, and a schema checks
+  its structure before any analysis runs. A visual node editor is a view of the XML that
+  round-trips through it, not a separate language.
+]
 
 // ================================================================
 = Presentation as a function of state
@@ -366,40 +382,58 @@ $f("pos", sigma)$ is no longer well defined.
 
 == Three mechanisms, used together
 
-+ *Declarative keyframes.* Any line may declare the complete screen, as in the Elm architecture
-  where the view is a function of the model @czaplicki2013. Animations are not stored; they are
-  derived by diffing consecutive screens, $"transition"(R_"prev", R_"next")$. The previous screen
-  is path-dependent, but it is ephemeral and never saved. The analogy is a video codec: a keyframe
-  is an I-frame, an imperative `show` is a P-frame (a delta), and seeking means jumping to the
-  nearest preceding I-frame and applying the deltas.
++ *Keyframes and deltas as render functions.* Each step may carry a render function
+  $"Screen" -> "Screen"$. A render reads only constants and its input screen, never $sigma$, and
+  every function it calls has a body the compiler can evaluate, so each render is fully known at
+  compile time. A render whose output ignores its input declares the complete screen, as in the
+  Elm architecture where the view is a function of the model @czaplicki2013: that is a
+  *keyframe*. Any other render is a *delta*. The analogy is a video codec: a keyframe is an
+  I-frame, a delta is a P-frame, and seeking means jumping to the nearest preceding I-frame and
+  applying the deltas. Every change names its animation; animations are not part of the screen
+  state and are skipped on replay.
 + *Explicit φ promoted into $sigma$.* If the screen after a merge genuinely depends on the branch,
   that dependency is narrative state and must live in $sigma$, declared by the author or
   materialized by the engine. Liveness analysis keeps it cheap: the variable dies at the next
   keyframe.
 + *Ambiguity as a lint.* Abstract interpretation @cousot1977 over the script computes, for each
-  line, the set of possible presentation states (powerset lattice, join = union). A singleton is
-  fine; anything larger is reported with the paths that cause it.
+  step, the set of possible presentation states (powerset lattice, join = union), per entity and
+  component, with one summary per scene. A singleton is fine; anything larger is reported with
+  the paths that cause it. Comparing screens needs every component type to have decidable
+  equality, and finiteness needs the set of screens to stay bounded: a render that reads a
+  component and computes from it (move 10 units right) can grow the set on every pass through a
+  loop, so such a render is a compile error unless the analysis proves it bounded.
 
 #decision[
-  Presentation is authored in XML (produced by the node editor), as keyframes plus deltas, with
-  conditions that read $sigma$. The narrative core never reads presentation state.
+  Presentation is authored as render functions over an entity–component–system screen:
+  entities are managed by render code (`.kirp`, or inline `<r>`), components are declared in
+  `.kix` and must implement `Eq`, and the systems that animate entities live in the engine.
+  Presentation never reads $sigma$; when it must depend on the story, the script branches with
+  `<match>` and attaches different renders to the steps in each arm. The narrative core never
+  reads presentation state.
 ]
 
 ```xml
-<keyframe id="festival.roof.k1">
-  <background src="bg/school_roof_evening"/>
-  <character id="haruka" pose="smile" at="left"/>
-  <switch on="affection.mio">
-    <case min="3"><character id="mio" at="right" pose="smile"/></case>
-    <default><character id="mio" at="right" pose="neutral"/></default>
-  </switch>
-  <bgm src="bgm/festival_evening" loop="true"/>
-</keyframe>
-
-<delta at="roof.line12">
-  <character id="haruka" pose="blush"/>
-</delta>
+<s>
+  <r>
+    let screen = Screen::empty();
+    screen.background().change(BG::ROOF_EVENING).apply_animation(fade(30));
+    screen.entity(HARUKA).appearance.pose.change(HARUKA::SMILE).apply_animation(instant_switch());
+    screen
+  </r>
+  The wind on the roof is cold.
+</s>
+<match var="affection_mio">
+  <cases><case val="3..=5" /><do>
+    <s><r>screen.entity(MIO).appearance.pose.change(MIO::SMILE).apply_animation(fade(10));</r>"You came."</s>
+  </do></cases>
+  <cases><case val="_" /><do>
+    <s><r>screen.entity(MIO).appearance.pose.change(MIO::NEUTRAL).apply_animation(fade(10));</r>"Oh. It's you."</s>
+  </do></cases>
+</match>
 ```
+
+The first render ignores its input screen, so it is a keyframe; the renders in the `<match>` arms
+are deltas.
 
 The ambiguity lint is likely the single most valuable debugging feature. It catches exactly the
 class of bug that today "only the author knows about": a sprite left over from another route, BGM
@@ -562,8 +596,9 @@ orderings to find out that they commute.
 = Live preview
 
 #decision[
-  Snapshots are taken at choice points. Preview re-executes the narrative core from the nearest
-  preceding choice snapshot to the cursor, then evaluates $f$ there. Locating _which_ line to
+  Snapshots are taken at choice points and include the screen. Preview restores the nearest
+  preceding choice snapshot and re-executes the narrative core to the cursor, running the renders
+  on the way without their animations. Locating _which_ line to
   inspect is left to the author, supported by the linter; witness-based jumping (Section 5.3)
   is a later phase.
 ]
@@ -592,6 +627,8 @@ Two details:
 
 - *The snapshot includes the call stack.* After the choice, a `return` must know where to go. Inside
   the hub that is one frame; inside a phone call during stall A on day 2 it is three.
+- *Loading and jumping without a snapshot.* The narrative core replays from the start, but renders
+  run only from the last keyframe on the path.
 - *Hot reload.* When the author edits a node, snapshots after the first edited node on the current
   trace are invalidated and rebuilt by replay, as Inky does after recompiling @inky. If a recorded
   choice no longer exists, preview stops at that choice and highlights it.
@@ -605,7 +642,7 @@ Two details:
   columns: (auto, 1fr, auto),
   [Part], [Content], [Role],
   [Trace], [Sequence of stable choice IDs, plus script version hash and PRNG seed], [canonical],
-  [Snapshot], [Position, call stack, $sigma$, promoted φ variables, PRNG state], [cache],
+  [Snapshot], [Position, call stack, $sigma$, promoted φ variables, PRNG state, screen], [cache],
 )
 
 Choice IDs are stable identifiers assigned when a choice node is created, never line numbers.
@@ -653,8 +690,9 @@ ordinary finite variables and the debugger lets the author set them directly.
   [Unreachable node], [Dead lines, impossible route conditions], [pushdown reachability],
   [Ambiguous presentation], [Leftover sprite/BGM/background after a merge], [abstract interpretation],
   [Write-never-read], [Flags that never influence anything], [liveness],
-  [Read-before-write], [Flags read on a path where no write happened], [reaching definitions],
-  [Unbounded step], [Loop without input or bound], [syntactic check],
+  [Unbounded step], [Loop or cycle of calls without input or bound], [interprocedural fixpoint],
+  [Unbounded screens], [Render whose read-modify-write grows the screen set in a loop], [abstract interpretation],
+  [Stuck choice], [Choice reachable with no arm offered], [pushdown reachability],
   [Non-atomic shuffle], [`each_once` branch that can be interrupted mid-way], [call-structure check],
 )
 
@@ -680,8 +718,8 @@ Each phase is usable on its own and does not require the later ones.
 #table(
   columns: (auto, 1fr, auto),
   [Phase], [Deliverable], [Unlocks],
-  [0], [Script IR as RSM (node graph + text serialization); narrative interpreter; trace saves with snapshot cache], [G3],
-  [1], [XML presentation (keyframes, deltas, `when` conditions); diff-based transitions; choice-point snapshots and hot-reload preview], [G1],
+  [0], [XML script (`.kis`) compiled to an RSM IR; narrative interpreter; trace saves with snapshot cache], [G3],
+  [1], [Render functions (`.kirp`) over an ECS screen with `.kix` components; keyframe detection; choice-point snapshots with the screen; hot-reload preview], [G1],
   [2], [Explicit-state analyzer for small scripts; unreachable, ambiguity, liveness lints], [G4 (partial)],
   [3], [Symbolic reachability (MDDs); per-line reachability conditions; witness jump; contracts with counterexamples], [G2, G4],
   [4], [Incremental query engine for live analysis; `each_once` with declared dependencies; partial-order reduction], [scale],
@@ -695,16 +733,14 @@ interface.
 = Open questions for discussion
 
 #question[
-  + *Integer ranges.* Are bounded integers saturating or is overflow a lint error? What default
-    range do affection counters get?
+  + *Integer ranges.* The syntax book makes bounded integers saturate, with a warning when the
+    analyzer proves a bound is reached. What default range do affection counters get?
   + *Recursion depth.* Allow unbounded recursion (full pushdown) or cap stack depth (finite
     automaton, simpler analysis)? No current use case needs unbounded recursion.
   + *Timed input.* Are auto-advance, timed choices and QTEs events in $Sigma$? If so, how are
     they recorded in traces?
   + *φ policy.* When the ambiguity lint fires, should the editor offer to insert a keyframe, to
     promote a state variable, or both?
-  + *Source of truth.* Is the node graph or the text serialization canonical in version control?
-    Graph merges are hard; text diffs are easy to review.
   + *Choice IDs.* Generated identifiers or author-chosen names? Generated IDs are stable under
     renaming; names are readable in divergence reports.
   + *Meta layer scope.* Which meta fields may the narrative core read, and at which points may
