@@ -221,8 +221,10 @@ rules:
 The program-shaped form of a pushdown system is a *Boolean program* (Ball and Rajamani's SLAM
 project @ball2000boolean @ball2000bebop); its graphical twin is a *recursive state machine*
 (RSM) @alur2005. In Kagari the restriction applies to exactly one function kind, `pushdown fn`,
-in which all narrative code is written (Section 3.4). The other kinds, `fn` and `const fn`, have
-the full language. Inside a `pushdown fn`:
+in which all narrative code is written (Section 3.4). A `pushdown fn` marked `#[scene]` is a
+scene: an RSM component that may suspend at steps. A `pushdown fn` without it is an instant
+procedure that runs without input. The other kinds, `fn` and `const fn`, have the full language.
+Inside a `pushdown fn`:
 
 #figure(caption: [What a `pushdown fn` allows and forbids. Each rule is checked by the type and
   kind checker, so a violation is a type error.], table(
@@ -234,19 +236,21 @@ the full language. Inside a `pushdown fn`:
     types, `Option<T>`, `Text` constants, asset handles],
   [Rust integers (`u8` … `i128`, `usize`), `Rat`, `Decimal`, `String`, `Vec`, maps, `Screen`:
     they reintroduce counters, hence Turing completeness],
-  [Calls to `pushdown fn`, including recursion; calls to `const fn` that are folded or
-    tabulated (Section 3.4)],
+  [In a scene: calls to scenes, including recursion, to instant procedures and to `push_step`.
+    In an instant procedure: calls to instant procedures, with an acyclic call graph. In both:
+    calls to `const fn` that are folded or tabulated (Section 3.4)],
   [Calls to `fn`: Turing-complete code would make $sigma$ unbounded],
-  [Function pointers of kind `pushdown fn` or `const fn`, stored in $sigma$ and called. The set
-    of named functions is finite, so a call through a pointer is a case split: the computed call
-    over a finite enum of proposal1],
+  [Function pointers of kind `scene fn`, `pushdown fn` or `const fn`, stored in $sigma$ and
+    called. The set of named functions is finite, so a call through a pointer is a case split:
+    the computed call over a finite enum of proposal1],
   [First-class closures (stored, returned, captured): closures are second-class, passed as an
-    argument and called only. Higher-order recursion schemes are decidable but
-    #box[$n$-EXPTIME]-complete for order $n$ @ong2006],
-  [`loop` and `while` whose body passes a step on every path; `for` over a constant range or
-    array; recursion cycles that pass a step],
+    argument and called only, and instant: a closure cannot step or call a scene. Higher-order
+    recursion schemes are decidable but #box[$n$-EXPTIME]-complete for order $n$ @ong2006],
+  [In a scene: `loop` and `while` whose body passes a step on every path, and recursion cycles
+    that pass a step. Everywhere: `for` over a constant range or array],
   [Loops, or cycles of calls, with no step and no bound: a single step might not terminate],
-  [`step` (input), written as `<s>` and `<choice>`; output through the `render` prop of a step],
+  [`push_step` (input), written with the forms `s!(…)` and `choice!{…}`; output through the
+    `render` attribute of a step],
   [Reading the screen, wall-clock time, OS state or meta (see the meta layer, Section 8.3): only
     `fn` code can, and a `pushdown fn` cannot call it],
 ))
@@ -330,7 +334,8 @@ different places:
   it gains genuine context-free power at no cost to decidability.
 ]
 
-In Kagari the day-1 part of the example reads as follows. Section 3.4 explains the syntax.
+In Kagari the day-1 part of the example reads as follows. Section 3.4 explains the syntax; this
+is a `.kix` file, because it uses forms.
 
 ```rust
 static mut VISITED_A: bool = false;
@@ -339,26 +344,28 @@ static mut VISITED_C: bool = false;
 
 enum Map { A, B, C, Leave }
 
+#[scene]
 #[entry]
 pushdown fn Day1() -> Ending {
-    <s>The school festival starts today.</s>;
-    <FestivalHub />;
-    <DormNight />;
+    s!(t!["The school festival starts today."]);
+    FestivalHub();
+    DormNight();
     Ending::Normal
 }
 
 #[scene]
 pushdown fn FestivalHub() {
     loop {
-        match <choice id="map">
-            <arm id={Map::A}>Go to stall A</arm>
-            <arm id={Map::B}>Go to stall B</arm>
-            <arm id={Map::C}>Go to stall C</arm>
-            <arm id={Map::Leave} when={VISITED_A && VISITED_B && VISITED_C}>Leave</arm>
-        </choice> {
-            Map::A => <StallA />,
-            Map::B => <StallB />,
-            Map::C => <StallC />,
+        match choice!{
+            id = "map",
+            t!["Go to stall A"] => Map::A,
+            t!["Go to stall B"] => Map::B,
+            t!["Go to stall C"] => Map::C,
+            t!["Leave"] if VISITED_A && VISITED_B && VISITED_C => Map::Leave,
+        } {
+            Map::A => StallA(),
+            Map::B => StallB(),
+            Map::C => StallC(),
             Map::Leave => break,
         }
     }
@@ -367,11 +374,11 @@ pushdown fn FestivalHub() {
 #[scene]
 pushdown fn StallA() {
     if VISITED_A {
-        <s>The stall is already packing up.</s>;
+        s!(t!["The stall is already packing up."]);
         return;
     }
     VISITED_A = true;
-    <s render={hanako_jumps}><m who="Hanako">Welcome to stall A!</m></s>;
+    s!(who = "Hanako", render = hanako_jumps, t!["Welcome to stall A!"]);
 }
 
 const fn hanako_jumps(mut screen: Screen) -> Screen {
@@ -381,7 +388,7 @@ const fn hanako_jumps(mut screen: Screen) -> Screen {
 ```
 
 The `loop` passes the choice on every path, so each step terminates. The `Leave` arm is offered
-only when its `when` guard holds; the stuck-choice check proves that some arm is always offered.
+only when its `if` guard holds; the stuck-choice check proves that some arm is always offered.
 
 == One language, three function kinds
 
@@ -394,7 +401,7 @@ replace all of them by one Rust-like language with three function kinds.
   align: left,
   [Kind], [Meaning], [Runs],
   [`fn`], [Turing-complete], [at runtime: the system (UI, menus, saves, settings)],
-  [`pushdown fn`], [pushdown control over finite data; may suspend at steps], [at runtime, inside the narrative],
+  [`pushdown fn`], [pushdown control over finite data; a `#[scene]` may suspend at steps], [at runtime, inside the narrative],
   [`const fn`], [pure, deterministic, Turing-complete; total where it is evaluated],
   [at compile time (renders, constants, tabulation); may also be called at runtime],
 ))
@@ -405,13 +412,15 @@ replace all of them by one Rust-like language with three function kinds.
   align: left,
   [Caller / callee], [`fn`], [`pushdown fn`], [`const fn`],
   [`fn`], [yes], [no; only _starts_ a story through an `#[entry]` scene], [yes],
-  [`pushdown fn`], [no], [yes], [yes, folded or tabulated],
+  [`pushdown fn`], [no], [yes: a scene calls scenes and instant procedures; an instant procedure calls instant procedures only], [yes, folded or tabulated],
   [`const fn`], [no], [no], [yes],
 ))
 
-Function pointer types carry the kind: `fn(A) -> B`, `pushdown fn(A) -> B` and
-`const fn(A) -> B`. So a `pushdown fn` cannot reach an `fn` through a pointer either. Const-ness
-is never inferred: `const fn` is written explicitly, and a lint may suggest it.
+Function pointer types carry the kind: `fn(A) -> B`, `const fn(A) -> B`, `pushdown fn(A) -> B`
+for an instant procedure and `scene fn(A) -> B` for a scene (tentative syntax; `scene` is a
+keyword only in types). So a `pushdown fn` cannot reach an `fn` through a pointer either, and
+an instant procedure cannot reach a scene. Const-ness is never inferred: `const fn` is written
+explicitly, and a lint may suggest it.
 
 === Why the restriction lives on functions
 
@@ -424,16 +433,19 @@ collections. Proposal1 needed a second scope with its own syntax for the same se
 
 The same reasoning fixes the closure rule. Closures capture by value. In `fn` and `const fn` they
 are first-class, which UI handlers need. In `pushdown fn` they are second-class: they may be
-passed as an argument and called, but never stored, returned or captured. A stored closure would
-put a captured environment into $sigma$ and make the program a higher-order recursion scheme.
-Model checking those is decidable, but #box[$n$-EXPTIME]-complete for order $n$ @ong2006. Named
-function pointers do not have this problem: their domain is the finite set of named functions.
+passed as an argument and called, but never stored, returned or captured. They are also
+instant: a closure cannot step or call a scene, so every step is a point in a named scene. A
+stored closure would put a captured environment into $sigma$ and make the program a
+higher-order recursion scheme. Model checking those is decidable, but
+#box[$n$-EXPTIME]-complete for order $n$ @ong2006. Named function pointers do not have this
+problem: their domain is the finite set of named functions.
 
 === The single channel from Turing-complete code
 
 The only way from `fn` code into the narrative is to start an `#[entry]` scene. Entry scenes are
-`pushdown fn`s with finite parameter and return types; they are the analysis roots and the only
-functions the system can start. The only ways back are the entry scene's return value, which the
+scenes with finite parameter and return types, written with both `#[entry]` and `#[scene]`; they
+are the analysis roots and the only functions the system can start. The only ways back are the
+entry scene's return value, which the
 system's exit handler receives and must handle exhaustively, and write-only meta (Section 8.3).
 Hence the whole narrative, from its start to any step, is pushdown, and G2 and G3 hold for every
 run the system can start. The analyzer quantifies over all values of the entry arguments.
@@ -446,12 +458,13 @@ enum Ending { Normal, Mio }
 enum Confess { Yes, No }
 enum Answer { Accepted, Rejected }
 
+#[scene]
 #[entry]
 pushdown fn Prologue(cleared_mio: bool) -> Ending {
     if cleared_mio {
-        <s>The rooftop door is unlocked this time.</s>;
+        s!(t!["The rooftop door is unlocked this time."]);
     }
-    let answer = <Confession />;
+    let answer = Confession();
     match answer {
         Answer::Accepted => {
             CLEARED_MIO.write(true);
@@ -463,11 +476,12 @@ pushdown fn Prologue(cleared_mio: bool) -> Ending {
 
 #[scene]
 pushdown fn Confession() -> Answer {
-    <s><m who="Mio">Is there something you want to tell me?</m></s>;
-    match <choice id="confess">
-        <arm id={Confess::Yes}>Tell her</arm>
-        <arm id={Confess::No}>Say nothing</arm>
-    </choice> {
+    s!(who = "Mio", t!["Is there something you want to tell me?"]);
+    match choice!{
+        id = "confess",
+        t!["Tell her"] => Confess::Yes,
+        t!["Say nothing"] => Confess::No,
+    } {
         Confess::Yes => Answer::Accepted,
         Confess::No => Answer::Rejected,
     }
@@ -511,62 +525,104 @@ const fn bonus(route: Route, affection: Int<0, 5>) -> Int<0, 2> {
   columns: (auto, 1fr),
   [Extension], [Syntax],
   [`.kis`], [The Rust-like language],
-  [`.kix`], [`.kis` plus JSX-style elements in expressions, as `.tsx` is to `.ts`],
+  [`.kix`], [`.kis` plus forms: `s!(…)`, `choice!{…}`, `t![…]` and the UI forms],
 )
 
 The extension selects the syntax only, never the semantics. Any function kind may appear in either
-file; narrative is normally written in `.kix` because it uses elements. Modules are Rust-like
-(`mod`, `pub`, `use`, paths with `::`), and one root file, `main.kix` by convention, is the
-compiler's input. There are no macros.
+file. Forms are allowed only in `.kix`; a `.kis` file writes the struct expressions that forms
+desugar to. Narrative is normally written in `.kix` for that reason. Modules are Rust-like (`mod`,
+`pub`, `use`, paths with `::`), and one root file, `main.kix` by convention, is the compiler's
+input.
 
-=== Narrative elements are sugar
+=== Narrative forms are sugar
 
-Elements in a `pushdown fn` are sugar for calls of the one primitive that suspends,
-`step` in `std::narrative`. The *outermost* element of an element expression is passed to `step`;
-nested elements are its props and children. The struct form can also be written by hand, in
-`.kis` as well:
+A *form* is written `name!(…)`, `name![…]` or `name!{…}`. Forms are not macros; there are no
+macros. They are a fixed set of built-in syntax that desugars to ordinary struct expressions and,
+for steps, to a call of `push_step`. Each form has exactly one delimiter, and the delimiter says
+its shape:
+
+#table(
+  columns: (auto, 1fr, auto),
+  [Delimiter], [Shape], [Example],
+  [`name!(…)`], [attributes, then a fixed number of elements], [`s!`: at most one `t![…]`],
+  [`name![…]`], [elements only, any number, no attributes], [`t![…]`],
+  [`name!{…}`], [attributes, then any number of elements], [`choice!{…}`],
+)
+
+Attributes are `key = expr`, separated by commas, and always come before the elements. Optional
+attributes may be omitted.
+
+The one primitive that suspends is `push_step` in `std::narrative`, a built-in
+`pushdown fn push_step<S: Step>(s: S) -> S::Output`. `s!` is an ordinary step. Its attributes,
+all optional, are `who` (the speaker's display text; absent means narration), `voice` and
+`render`, and its one optional element is the text. There is one speaker per step. `s!()` waits
+without a message. The form has value `()`:
 
 ```rust
-<s render={r}><m who="Azusa" voice={AZUSA_0072}>ぬっ</m></s>;
+s!(who = "Azusa", voice = AZUSA_0072, render = r, t!["ぬっ"]);
 // is
-step(Say {
+push_step(Say {
+    who: Some("Azusa"),
+    voice: Some(AZUSA_0072),
     render: Some(r),
-    messages: [Message {
-        who: Some("Azusa"),
-        voice: Some(AZUSA_0072),
-        text: "ぬっ",
-    }],
+    text: Some(t!["ぬっ"]),
 });
 ```
 
-Pushdown functions call each other directly, without `.await`, like Kotlin `suspend` functions,
-which can be called only from other suspending functions @kotlincoroutines. A step suspends the
-whole narrative until input. `<s>` is an ordinary step: its text is narration and its `<m>`
-children are speaker messages. `<choice>` is one step that evaluates to the selected arm's
-variant of an author-declared enum; branching is an ordinary exhaustive `match` on it, so arms
-are data, not code blocks. A function annotated `#[scene]` can be used as a capitalized tag:
-`<FestivalHub />` is the call `FestivalHub()`, its attributes are the parameters by name, and
-the tag evaluates to the return value (`let answer = <Confession />;`). A scene tag has no
-children, because children would be a captured thunk, that is, a closure. A scene that can end in
-several ways returns an enum, and the caller matches on it.
+`choice!{…}` is one step. Its attributes are `id`, a string literal unique within the function,
+and an optional `render`. Its elements are arms `t![…] => V` or `t![…] if cond => V`, separated
+by commas; an arm with a guard is shown only when `cond` holds. All variants come from one
+author-declared enum without payloads, each at most once. The form evaluates to the selected
+variant, and branching is an ordinary exhaustive `match` on it, so arms are data, not code blocks.
+
+`t![…]` builds a `Text` value (rich text). Its items are juxtaposed, without commas, and
+concatenate directly:
+
+- a string literal with Rust escapes; the text is exactly its content, and a line break is `\n`;
+- ruby: `["数多"]("あまた")` for group ruby, `["漢字"]("かん"|"じ")` for mono ruby, where the
+  number of reading parts equals the number of base characters;
+- a text represent value: `!["赤い"](color_text(RED))`. The target is a constant expression of
+  type `TextEffect` (tentative name), folded at compile time. It is a value, not a function, so
+  the presentation of text stays as analyzable as the screen. Emphasis is `!["you"](emphasis())`.
+
+```rust
+s!(t!["これは" ["数多"]("あまた") "の" !["赤い"](color_text(RED)) "花"]);
+```
+
+`#[scene]` marks a `pushdown fn` as a *scene*: the unit of model checking, one RSM component.
+Only a scene may call `push_step`, which is impure because it suspends, and only a scene may call
+other scenes. Scenes are called with ordinary call syntax (`FestivalHub();`,
+`let answer = Confession();`). They call each other directly, without `.await`, like Kotlin
+`suspend` functions, which can be called only from other suspending functions @kotlincoroutines;
+a step suspends the whole narrative until input. A scene that can end in several ways returns an
+enum, and the caller matches on it. The termination check of Section 3.1 applies to scenes.
+
+A `pushdown fn` without `#[scene]` is an *instant procedure*. It has finite types, may read and
+write story variables and may call other instant procedures and `const fn`s. It may not call
+`push_step` or a scene, may not recurse (the call graph among instant procedures is acyclic) and
+has only bounded loops (`for` over a constant range or array; no `loop` or `while`). It therefore
+terminates without input by construction, and the analyzer treats a call as one instant
+transition inside the calling scene.
 
 === Node editor as a view
 
 An RSM is literally a node graph: each *component* is a graph with entry and exit nodes, and a
 *box* stands for a call whose exits are wired to the caller @alur2005. In Kagari a component is
-a scene function, a box is a scene tag, the edges are its structured control flow, and `<s>` and
-`<choice>` are input nodes. A node editor that shows scene functions as graphs remains possible,
-but the XML is no longer a canonical form to round-trip through. The text is canonical, and it
-still diffs and merges as text.
+a `#[scene]` function, a box is a call of a `#[scene]` function, the edges are its structured
+control flow, and `s!` and `choice!` steps are input nodes. A node editor that shows scenes as
+graphs remains possible, but the XML is no longer a canonical form to round-trip through. The
+text is canonical, and it still diffs and merges as text.
 
 #decision[
   Kagari has one Rust-like language with three function kinds: `fn` (Turing-complete, the
   system), `pushdown fn` (the narrative) and `const fn` (renders, constants, tabulated helpers).
   The pushdown restriction is the property of `pushdown fn` and nothing else, checked by the type
-  and kind checker. The only channel from `fn` code into the narrative is starting an `#[entry]`
-  scene with finite arguments; the only channels back are its return value and write-only meta.
-  Narrative elements are sugar for `step` and for scene calls. `.kis` and `.kix` text is
-  canonical in version control; a node editor, if built, is a view of it.
+  and kind checker. Within it, `#[scene]` marks the unit of model checking: only scenes step and
+  call scenes; other `pushdown fn`s are instant procedures. The only channel from `fn` code into
+  the narrative is starting an `#[entry]` scene with finite arguments; the only channels back are
+  its return value and write-only meta. Narrative forms (`s!`, `choice!`, `t!`) are fixed
+  built-in sugar for struct expressions and `push_step`, allowed in `.kix`. `.kis` and `.kix`
+  text is canonical in version control; a node editor, if built, is a view of it.
 ]
 
 // ================================================================
@@ -600,7 +656,7 @@ $f("pos", sigma)$ is no longer well defined.
 == Three mechanisms, used together
 
 + *Keyframes and deltas as render functions.* Each step may carry a render, a
-  `const fn(Screen) -> Screen` passed as its `render` prop. The render's only input is the
+  `const fn(Screen) -> Screen` passed as its `render` attribute. The render's only input is the
   screen, and it is a `const fn`, so the compiler evaluates it and each render is fully known at
   compile time. A render whose output does not depend on its input declares the complete screen,
   as in the Elm architecture where the view is a function of the model @czaplicki2013: that is a
@@ -632,10 +688,11 @@ $f("pos", sigma)$ is no longer well defined.
   Presentation is authored as render functions, `const fn(Screen) -> Screen`, over an
   entity–component–system screen: entities are managed by renders, components are structs with
   structural `Eq`, and the systems that animate entities live in the engine. Renders are blind to
-  $sigma$ by construction: a `render` prop is a function pointer, or a non-capturing closure that
-  coerces to one, and closures in `pushdown fn` are second-class, so no story variable can reach
-  a render. When presentation must depend on the story, the script branches with `if` or `match`
-  and passes different renders to the steps in each arm. The narrative core never reads the
+  $sigma$ by construction: a `render` attribute is a function pointer, or a non-capturing closure
+  that coerces to one, and closures in `pushdown fn` are second-class, so no story variable can
+  reach a render. When presentation must depend on the story, the script branches with `if` or
+  `match` and passes different renders to the steps in each arm. The narrative core never reads
+  the
   screen: `Screen` is not a finite type, so a `pushdown fn` cannot hold one. Because renders are
   Turing-complete, bounded screens are enforced by evaluation with a cap (tentative).
 ]
@@ -645,20 +702,20 @@ static mut AFFECTION_MIO: Int<0, 5> = 0;
 
 #[scene]
 pushdown fn Roof() {
-    <s render={roof_evening}>The wind on the roof is cold.</s>;
+    s!(render = roof_evening, t!["The wind on the roof is cold."]);
     match AFFECTION_MIO {
-        3..=5 => <s render={|mut screen| {
+        3..=5 => s!(who = "Mio", render = |mut screen| {
             screen.entity(MIO).appearance.pose
                 .change(MIO::SMILE)
                 .apply_animation(fade(10));
             screen
-        }}><m who="Mio">You came.</m></s>,
-        _ => <s render={|mut screen| {
+        }, t!["You came."]),
+        _ => s!(who = "Mio", render = |mut screen| {
             screen.entity(MIO).appearance.pose
                 .change(MIO::NEUTRAL)
                 .apply_animation(fade(10));
             screen
-        }}><m who="Mio">Oh. It's you.</m></s>,
+        }, t!["Oh. It's you."]),
     }
 }
 
@@ -808,8 +865,8 @@ The important move is in the language, not the analyzer. A finite or pushdown au
 express "each guest exactly once" only by spelling out $2^n$ control states. A *shuffle*
 (interleaving) operator stays in the same language class (the shuffle of regular languages is
 regular) but is exponentially more succinct @mayer1994. The following is a sketch; `each_once`
-is not part of the language yet. It reads like `loop { match <choice> … }`, except that each arm
-is offered at most once:
+is not part of the language yet. It reads like `loop { match choice!{…} {…} }`, except that each
+arm is offered at most once:
 
 ```rust
 enum Guest { Haruka, Mio, Rin, Sensei, Leave }
@@ -817,17 +874,18 @@ enum Guest { Haruka, Mio, Rin, Sensei, Leave }
 #[scene]
 pushdown fn Party() {
     // Sketch: `each_once` and `visited` are not part of the language yet.
-    each_once <choice id="guest">
-        <arm id={Guest::Haruka}>Talk to Haruka</arm>
-        <arm id={Guest::Mio}>Talk to Mio</arm>
-        <arm id={Guest::Rin}>Talk to Rin</arm>
-        <arm id={Guest::Sensei}>Talk to the teacher</arm>
-        <arm id={Guest::Leave}>Leave the party</arm>
-    </choice> {
-        Guest::Haruka => <TalkHaruka />,
-        Guest::Mio => <TalkMio />,
-        Guest::Rin => <TalkRin />,
-        Guest::Sensei => <TalkSensei />,
+    each_once choice!{
+        id = "guest",
+        t!["Talk to Haruka"] => Guest::Haruka,
+        t!["Talk to Mio"] => Guest::Mio,
+        t!["Talk to Rin"] => Guest::Rin,
+        t!["Talk to the teacher"] => Guest::Sensei,
+        t!["Leave the party"] => Guest::Leave,
+    } {
+        Guest::Haruka => TalkHaruka(),
+        Guest::Mio => TalkMio(),
+        Guest::Rin => TalkRin(),
+        Guest::Sensei => TalkSensei(),
         Guest::Leave => break,
     }
 }
@@ -841,7 +899,7 @@ Order-dependence is then declared rather than discovered:
 #[scene]
 pushdown fn TalkMio() {
     if visited(Guest::Haruka) {  // declared dependency on the visited set
-        <s><m who="Mio">Haruka told me you'd come.</m></s>;
+        s!(who = "Mio", t!["Haruka told me you'd come."]);
     }
     // …
 }
@@ -1025,6 +1083,8 @@ interface.
   + *User traits and generics.* Only the standard traits (`Eq`, `Step`) and const generics for
     `Int<lo, hi>` and std types exist. Do authors need their own traits and generics, and how do
     they interact with kind checking and tabulation?
+  + *Text interpolation.* `{expr}` of type `Text` or `Int` inside `t![…]` (tentative). How does
+    the backlog record interpolated text?
 ]
 
 #v(4mm)
